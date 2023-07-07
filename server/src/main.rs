@@ -1,10 +1,13 @@
 use ws::listen;
 use std::env::var;
+use std::fmt::Display;
 use std::sync::{Mutex, Arc};
 use std::thread;
+use std::io::stdin;
 
 
 /// All possible message types in the system.
+#[derive(Debug)]
 enum MessageType {
     Request,
     Grant,
@@ -30,8 +33,16 @@ impl Request {
             remote_process: values[0].to_string(),
             from_socket: socket_id,
             message_type: if values[1] == "REQ" 
-                {MessageType::Grant} else {MessageType::Release}
+                {MessageType::Request} else {MessageType::Release}
         }
+    }
+}
+
+/// Implement Display to make Request printable
+impl std::fmt::Display for Request {
+
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "\t- [from: {}, type: {:?}]", self.remote_process, self.message_type)
     }
 }
 
@@ -64,13 +75,21 @@ fn main() {
     let address = build_url();
     println!("Starting WS server at ws://{}", address);
 
+    // thread::spawn(move || {
+    //     loop {
+    //         let command: mut String = stdin();
+    //         println!({}, command);
+    //     }
+    // })
+
+    
     // Create WS server    
     listen(address, |out| {
 
         move |msg: ws::Message| {
-            println!("{}", msg);
             println!("{}", out.connection_id());
-            Request::from_message(&msg, 12);
+            let req = Request::from_message(&msg, 12);
+            println!("{}", req);
             // send()
             out.send(msg)
        }
