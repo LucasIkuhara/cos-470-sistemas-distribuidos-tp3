@@ -1,9 +1,9 @@
 use ws::listen;
 use std::env::var;
-use std::fmt::Display;
+use std::process::exit;
 use std::sync::{Mutex, Arc};
 use std::thread;
-use std::io::stdin;
+use std::io::{stdin, stdout, Write};
 
 
 /// All possible message types in the system.
@@ -62,25 +62,59 @@ fn build_url() -> String {
         Err(_) => String::from("5000")
     };
 
-    return format!("{}:{}", host, port);
+    return format!("{}:{}", host, "1234");
+}
+
+/// Display all possible CLI commands.
+fn cli_help() {
+    println!("Available commands:\n\t0. Display this message.\n\t1. Show current queue\n\t2. Metrics by client\n\t3. Terminate execution\n");
+}
+
+/// Display a command-line menu to the user, and handle input appropriately.
+fn handle_cli_input(queue: Arc<Mutex<Vec<Request>>>) {
+
+    cli_help();
+    loop {
+
+        // Read command
+        print!(">> ");
+        stdout().flush().unwrap();
+        let mut buffer: String = String::new();
+        stdin().read_line(&mut buffer).expect("Failed to read command.");
+        let command = buffer.trim();
+
+        // Handle input
+        match command {
+
+            "0" => cli_help(),
+            "1" => {
+                let q = queue.lock().unwrap();
+        
+                println!("(HEAD)");
+                for req in q.iter() {
+                    println!("{}", req);
+                }
+            },
+            "2" => println!("Not implemented"),
+            "3" => exit(0),
+            _ => println!("Invalid command. To list available commands, type 'help'.")
+        }
+    }
+
 }
 
 fn main() {
 
     // Request queue
     let mut queue: Vec<Request> = vec![];
-    let queue_lock = Arc::new(Mutex::new(queue));
-    
+    let queue_lock: Arc<Mutex<Vec<Request>>> = Arc::new(Mutex::new(queue));
+
     // Get server url
     let address = build_url();
     println!("Starting WS server at ws://{}", address);
 
-    // thread::spawn(move || {
-    //     loop {
-    //         let command: mut String = stdin();
-    //         println!({}, command);
-    //     }
-    // })
+    // Start CLI in another thread
+    thread::spawn(move || handle_cli_input(queue_lock.clone()));
 
     
     // Create WS server    
