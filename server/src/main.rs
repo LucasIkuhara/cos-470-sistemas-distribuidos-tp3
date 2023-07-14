@@ -1,6 +1,8 @@
-use ws::listen;
+use ws;
+// use std::sync::mpsc::{Receiver, Sender, channel};
 use std::env::var;
 use std::process::exit;
+use std::sync::mpsc::{Sender, Receiver, channel};
 use std::sync::{Mutex, Arc};
 use std::thread;
 use std::io::{stdin, stdout, Write};
@@ -17,24 +19,27 @@ enum MessageType {
 /// Represents a request received from a client.
 struct Request {
     remote_process: String,
-    from_socket: u32,
+    callback_sender: Sender<String>,
     message_type: MessageType
 }
 
 impl Request {
     
-    /// Create a new Request from a message.
-    fn from_message(input: &ws::Message, socket_id: u32) -> Request {
+    /// Create a new Request from a message and it's respective sender for responding to its creator.
+    fn from_message(input: &ws::Message, socket_id: u32) -> (Request, Receiver<String>) {
 
         let text: &str = input.as_text().expect("Failed to parse received message.");
         let values: Vec<&str> = text.split("|").collect();
+        let (tx, rx): (Sender<String>, Receiver<String>) = channel();
 
-        Request {
+        let req = Request {
             remote_process: values[0].to_string(),
-            from_socket: socket_id,
+            callback_sender: tx,
             message_type: if values[1] == "REQ" 
                 {MessageType::Request} else {MessageType::Release}
-        }
+        };
+
+        return (req, rx);
     }
 }
 
@@ -88,20 +93,51 @@ fn handle_cli_input(queue: Arc<Mutex<Vec<Request>>>) {
 
             "0" => cli_help(),
             "1" => {
-                let q = queue.lock().unwrap();
-        
+                let mutex_q: std::sync::MutexGuard<'_, Vec<Request>> = queue.lock().unwrap();
+
                 println!("(HEAD)");
-                for req in q.iter() {
+                for req in mutex_q.iter() {
                     println!("{}", req);
                 }
             },
             "2" => println!("Not implemented"),
             "3" => exit(0),
-            _ => println!("Invalid command. To list available commands, type 'help'.")
+            _ => println!("Invalid command. To list available commands, type '0'.")
         }
     }
 
 }
+
+/// Main coordinator thread-target function. Responsible for managing access.
+fn handle_queue(queue: Arc<Mutex<Vec<Request>>>, rx: Receiver<Request>) {
+    loop {
+            // Wait for requests
+            let data = rx.recv().expect("Coordinator failed to receive value from the request handler closure.");
+        
+            let mut mutex_q = queue.lock().unwrap();
+            data.callback_sender.send(String::from("This is a response")).unwrap();
+            mutex_q.push(data);
+    }
+}
+
+/// Handle user requests.
+fn handle_request(client: ws::Sender, queue_sender: Arc<Sender<Request>>) -> impl Fn(ws::Message) -> ws::Result<()> {
+
+    move |msg: ws::Message|  {
+
+        // Create request struct from contents
+        let (req, rx) = Request::from_message(&msg, 12);
+        
+        // Send Request to request queue, and wait for a response
+        queue_sender.send(req).unwrap();
+        let response = rx.recv().expect("Request closure failed to receive an answer.");
+
+        // Respond to client upon receiving coordinator response
+        client.send(response).unwrap();
+        Ok(())
+   }
+}
+
 
 fn main() {
 
@@ -114,18 +150,19 @@ fn main() {
     println!("Starting WS server at ws://{}", address);
 
     // Start CLI in another thread
-    thread::spawn(move || handle_cli_input(queue_lock.clone()));
+    let cli_queue = queue_lock.clone();
+    thread::spawn(move || handle_cli_input(cli_queue));
 
-    
+    // Start coordinator in another thread
+    let (tx, rx): (Sender<Request>, Receiver<Request>) = channel();
+    thread::spawn(move || handle_queue(queue_lock, rx));
+
+    // Create a moveable copy of tx
+    let transmitter = Arc::new(tx);
+
     // Create WS server    
-    listen(address, |out| {
-
-        move |msg: ws::Message| {
-            println!("{}", out.connection_id());
-            let req = Request::from_message(&msg, 12);
-            println!("{}", req);
-            // send()
-            out.send(msg)
-       }
-    }).expect("Failed to create WS server. Aborting.");
+    ws::listen(
+        address, 
+        |out| handle_request(out, transmitter.clone())
+    ).expect("Failed to create WS server. Aborting.");
 }
