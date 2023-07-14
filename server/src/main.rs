@@ -64,10 +64,10 @@ fn build_url() -> String {
 
     let port: String = match var("PORT") {
         Ok(val) => val,
-        Err(_) => String::from("5000")
+        Err(_) => String::from("5050")
     };
 
-    return format!("{}:{}", host, "1234");
+    return format!("{}:{}", host, port);
 }
 
 /// Display all possible CLI commands.
