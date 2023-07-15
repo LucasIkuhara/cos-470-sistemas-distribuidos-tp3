@@ -132,11 +132,28 @@ fn handle_queue(queue: Arc<Mutex<QueueState>>, rx: Receiver<Request>) {
             state.statistics.insert(data.remote_process.clone(), current_stat);
 
             // Either execute, ignore or put the request in queue
-            match state.current_holder {                
+            match &state.current_holder.clone() {                
+
+                // If there is someone accessing the critical zone already
                 Some(holder) => {
-                    
-                    data.callback_sender.send(String::from("This is a response")).unwrap();
-                    state.queue.push(data);
+
+                    match data.message_type {
+
+                        // If message is a request, put it in queue
+                        MessageType::Request => {
+                            print!("");
+                        },
+
+                        // If it's a release, check if the sender is the process is the one holding the lock
+                        MessageType::Request => {
+
+                        },
+
+                        // If it's a grant, ignore it
+                        _ => continue
+                    }
+                    // data.callback_sender.send(String::from("This is a response")).unwrap();
+                    // state.queue.push(data);
                 },
 
                 // If there is no one accessing the critical zone
@@ -148,7 +165,7 @@ fn handle_queue(queue: Arc<Mutex<QueueState>>, rx: Receiver<Request>) {
                             print!("");
                         },
 
-                        // If it a release, ignore it
+                        // If it's a release, ignore it
                         _ => continue
                     }
                 }
