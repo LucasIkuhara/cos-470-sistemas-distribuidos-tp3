@@ -6,6 +6,7 @@ use std::sync::mpsc::{Sender, Receiver, channel};
 use std::sync::{Mutex, Arc};
 use std::thread;
 use std::io::{stdin, stdout, Write};
+use std::collections::HashMap;
 
 
 /// All possible message types in the system.
@@ -51,6 +52,12 @@ impl std::fmt::Display for Request {
     }
 }
 
+struct QueueState {
+    current_holder: Option<String>,
+    queue: Vec<Request>,
+    statistics: HashMap<String, i32>
+}
+
 /// Compute the server URL based on the HOST and PORT environment variables.
 /// If HOST is unavailable, default to "0.0.0.0",
 /// and if PORT is unavailable, default to 5000.
@@ -76,7 +83,7 @@ fn cli_help() {
 }
 
 /// Display a command-line menu to the user, and handle input appropriately.
-fn handle_cli_input(queue: Arc<Mutex<Vec<Request>>>) {
+fn handle_cli_input(queue: Arc<Mutex<QueueState>>) {
 
     cli_help();
     loop {
@@ -93,10 +100,10 @@ fn handle_cli_input(queue: Arc<Mutex<Vec<Request>>>) {
 
             "0" => cli_help(),
             "1" => {
-                let mutex_q: std::sync::MutexGuard<'_, Vec<Request>> = queue.lock().unwrap();
+                let mutex_q:std::sync::MutexGuard<'_, QueueState> = queue.lock().unwrap();
 
                 println!("(HEAD)");
-                for req in mutex_q.iter() {
+                for req in mutex_q.queue.iter() {
                     println!("{}", req);
                 }
             },
@@ -109,14 +116,43 @@ fn handle_cli_input(queue: Arc<Mutex<Vec<Request>>>) {
 }
 
 /// Main coordinator thread-target function. Responsible for managing access.
-fn handle_queue(queue: Arc<Mutex<Vec<Request>>>, rx: Receiver<Request>) {
+fn handle_queue(queue: Arc<Mutex<QueueState>>, rx: Receiver<Request>) {
     loop {
             // Wait for requests
             let data = rx.recv().expect("Coordinator failed to receive value from the request handler closure.");
-        
-            let mut mutex_q = queue.lock().unwrap();
-            data.callback_sender.send(String::from("This is a response")).unwrap();
-            mutex_q.push(data);
+    
+            // Acquire state lock
+            let mut state = queue.lock().unwrap();
+
+            // Update statistics
+            let current_stat = match state.statistics.get(&data.remote_process) {
+                Some(val) => *val + 1,
+                None => 1
+            };
+            state.statistics.insert(data.remote_process.clone(), current_stat);
+
+            // Either execute, ignore or put the request in queue
+            match state.current_holder {                
+                Some(holder) => {
+                    
+                    data.callback_sender.send(String::from("This is a response")).unwrap();
+                    state.queue.push(data);
+                },
+
+                // If there is no one accessing the critical zone
+                None => {
+                    match data.message_type {
+
+                        // If message is a request, allow it access
+                        MessageType::Request => {
+                            print!("");
+                        },
+
+                        // If it a release, ignore it
+                        _ => continue
+                    }
+                }
+            }
     }
 }
 
@@ -141,21 +177,25 @@ fn handle_request(client: ws::Sender, queue_sender: Arc<Sender<Request>>) -> imp
 
 fn main() {
 
-    // Request queue
-    let mut queue: Vec<Request> = vec![];
-    let queue_lock: Arc<Mutex<Vec<Request>>> = Arc::new(Mutex::new(queue));
+    // Request queue and state initialization
+    let mut state: QueueState = QueueState {
+        current_holder: None,
+        queue: vec![],
+        statistics: HashMap::new()
+    };
+    let state_lock: Arc<Mutex<QueueState>> = Arc::new(Mutex::new(state));
 
     // Get server url
     let address = build_url();
     println!("Starting WS server at ws://{}", address);
 
     // Start CLI in another thread
-    let cli_queue = queue_lock.clone();
+    let cli_queue = state_lock.clone();
     thread::spawn(move || handle_cli_input(cli_queue));
 
     // Start coordinator in another thread
     let (tx, rx): (Sender<Request>, Receiver<Request>) = channel();
-    thread::spawn(move || handle_queue(queue_lock, rx));
+    thread::spawn(move || handle_queue(state_lock, rx));
 
     // Create a moveable copy of tx
     let transmitter = Arc::new(tx);
