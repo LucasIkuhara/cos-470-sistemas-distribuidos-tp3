@@ -1,11 +1,13 @@
 use ws;
 use std::env::var;
+use std::fs::{OpenOptions, File};
 use std::process::exit;
 use std::sync::mpsc::{Sender, Receiver, channel};
 use std::sync::{Mutex, Arc};
 use std::thread;
 use std::io::{stdin, stdout, Write};
 use std::collections::{HashMap, VecDeque};
+use std::time::SystemTime;
 
 
 /// All possible client message types in the system.
@@ -15,6 +17,7 @@ enum RequestType {
     Release
 }
 
+/// All possible server responses
 enum ResponseType {
     Grant
 }
@@ -24,6 +27,25 @@ struct Request {
     remote_process: String,
     callback_sender: Sender<ResponseType>,
     message_type: RequestType
+}
+
+/// Gets a file handle for the server log file.
+fn get_log_file(log_file: Option<&str>) -> File {
+    OpenOptions::new()
+    .write(true)
+    .append(true)
+    .create(true)
+    .open(log_file.unwrap_or("server.log"))
+    .expect("Failed to open log file")
+}
+
+/// Log outgoing grant to log file
+fn log_grant(id: &str) {
+
+    let mut file = get_log_file(None);
+    let time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+    writeln!(file, "{} | GRANT | {}", time.as_secs(), &id)
+    .expect("Failed to write to file");
 }
 
 impl Request {
@@ -44,10 +66,29 @@ impl Request {
 
         return (req, rx);
     }
+
+    /// Appends request to log file. If no filename is given, defaults to server.log
+    fn log_to_file(&self) {
+
+        let mut file = get_log_file(None);
+        let time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+
+        match self.message_type {
+
+            RequestType::Request => {
+                writeln!(file, "{} | REQUEST | {}", time.as_secs(), &self.remote_process)
+                .expect("Failed to write to file");
+            },
+            RequestType::Release => {
+                writeln!(file, "{} | RELEASE | {}", time.as_secs(), &self.remote_process)
+                .expect("Failed to write to file");
+            }
+        }
+    }
 }
 
 /// Implement Display to make Request printable
-impl std::fmt::Display for Request {
+impl std::fmt::Display for Request {    
 
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "\t- [from: {}, type: {:?}]", self.remote_process, self.message_type)
@@ -227,6 +268,10 @@ fn handle_request(client: ws::Sender, queue_sender: Sender<Request>) -> impl Fn(
 
             // Create request struct from contents
             let (req, rx) = Request::from_message(&msg);
+            
+            // Log request to file
+            req.log_to_file();
+            let client_id = req.remote_process.clone();
 
             // Handle different message types
             match req.message_type {
@@ -237,6 +282,7 @@ fn handle_request(client: ws::Sender, queue_sender: Sender<Request>) -> impl Fn(
                     rx.recv().expect("Request closure failed to receive an answer.");
 
                     // Respond to client upon receiving coordinator response
+                    log_grant(&client_id);
                     ws_client.send("GRANT").unwrap();
                 },
 
