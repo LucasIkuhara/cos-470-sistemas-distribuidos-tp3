@@ -1,5 +1,4 @@
 use ws;
-// use std::sync::mpsc::{Receiver, Sender, channel};
 use std::env::var;
 use std::process::exit;
 use std::sync::mpsc::{Sender, Receiver, channel};
@@ -9,35 +8,38 @@ use std::io::{stdin, stdout, Write};
 use std::collections::HashMap;
 
 
-/// All possible message types in the system.
+/// All possible client message types in the system.
 #[derive(Debug)]
-enum MessageType {
+enum RequestType {
     Request,
-    Grant,
     Release
+}
+
+enum ResponseType {
+    Grant
 }
 
 /// Represents a request received from a client.
 struct Request {
     remote_process: String,
-    callback_sender: Sender<String>,
-    message_type: MessageType
+    callback_sender: Sender<ResponseType>,
+    message_type: RequestType
 }
 
 impl Request {
     
     /// Create a new Request from a message and it's respective sender for responding to its creator.
-    fn from_message(input: &ws::Message, socket_id: u32) -> (Request, Receiver<String>) {
+    fn from_message(input: &ws::Message, socket_id: u32) -> (Request, Receiver<ResponseType>) {
 
         let text: &str = input.as_text().expect("Failed to parse received message.");
         let values: Vec<&str> = text.split("|").collect();
-        let (tx, rx): (Sender<String>, Receiver<String>) = channel();
+        let (tx, rx): (Sender<ResponseType>, Receiver<ResponseType>) = channel();
 
         let req = Request {
             remote_process: values[0].to_string(),
             callback_sender: tx,
             message_type: if values[1] == "REQ" 
-                {MessageType::Request} else {MessageType::Release}
+                {RequestType::Request} else {RequestType::Release}
         };
 
         return (req, rx);
@@ -98,16 +100,37 @@ fn handle_cli_input(queue: Arc<Mutex<QueueState>>) {
         // Handle input
         match command {
 
+            // help
             "0" => cli_help(),
+
+            // Show current queue
             "1" => {
+
                 let mutex_q:std::sync::MutexGuard<'_, QueueState> = queue.lock().unwrap();
+
+                match &mutex_q.current_holder {
+                    Some(el) => println!("HOLDER: {}", el),
+                    None => println!("HOLDER: -")
+                }
 
                 println!("(HEAD)");
                 for req in mutex_q.queue.iter() {
                     println!("{}", req);
                 }
             },
-            "2" => println!("Not implemented"),
+
+            // Show statistics
+            "2" => {
+
+                let mutex_q:std::sync::MutexGuard<'_, QueueState> = queue.lock().unwrap();
+
+                println!("PROCESS | INTERACTIONS");
+                for (process, count) in mutex_q.statistics.iter() {
+                    println!("{} | {}", process, count);
+                }
+            },
+
+            // Exit
             "3" => exit(0),
             _ => println!("Invalid command. To list available commands, type '0'.")
         }
@@ -120,7 +143,8 @@ fn handle_queue(queue: Arc<Mutex<QueueState>>, rx: Receiver<Request>) {
     loop {
             // Wait for requests
             let data = rx.recv().expect("Coordinator failed to receive value from the request handler closure.");
-    
+            println!("{}", &data);
+            
             // Acquire state lock
             let mut state = queue.lock().unwrap();
 
@@ -140,20 +164,26 @@ fn handle_queue(queue: Arc<Mutex<QueueState>>, rx: Receiver<Request>) {
                     match data.message_type {
 
                         // If message is a request, put it in queue
-                        MessageType::Request => {
-                            print!("");
+                        RequestType::Request => {
+                            state.queue.push(data);
                         },
 
                         // If it's a release, check if the sender is the process is the one holding the lock
-                        MessageType::Request => {
+                        RequestType::Release => {
 
+                            // If the release is valid, allow access to the next request
+                            if &data.remote_process == holder {
+
+                                let new_owner = match state.queue.pop() {
+                                    Some(el) => el,
+                                    None => {continue;}
+                                };
+                                state.queue.remove(0);
+                                state.current_holder = Some(new_owner.remote_process.clone());
+                                // data.callback_sender.send(String::from("This is a response")).unwrap();
+                            }
                         },
-
-                        // If it's a grant, ignore it
-                        _ => continue
                     }
-                    // data.callback_sender.send(String::from("This is a response")).unwrap();
-                    // state.queue.push(data);
                 },
 
                 // If there is no one accessing the critical zone
@@ -161,12 +191,13 @@ fn handle_queue(queue: Arc<Mutex<QueueState>>, rx: Receiver<Request>) {
                     match data.message_type {
 
                         // If message is a request, allow it access
-                        MessageType::Request => {
-                            print!("");
+                        RequestType::Request => {
+                            data.callback_sender.send(ResponseType::Grant).unwrap();
+                            state.current_holder = Some(data.remote_process)
                         },
 
                         // If it's a release, ignore it
-                        _ => continue
+                        RequestType::Release => continue
                     }
                 }
             }
@@ -174,19 +205,30 @@ fn handle_queue(queue: Arc<Mutex<QueueState>>, rx: Receiver<Request>) {
 }
 
 /// Handle user requests.
-fn handle_request(client: ws::Sender, queue_sender: Arc<Sender<Request>>) -> impl Fn(ws::Message) -> ws::Result<()> {
+fn handle_request(client: ws::Sender, queue_sender: Sender<Request>) -> impl Fn(ws::Message) -> ws::Result<()> {
+    
+    // Create moveable copy of client
+    let client_arc = Arc::new(client);
 
     move |msg: ws::Message|  {
 
-        // Create request struct from contents
-        let (req, rx) = Request::from_message(&msg, 12);
-        
-        // Send Request to request queue, and wait for a response
-        queue_sender.send(req).unwrap();
-        let response = rx.recv().expect("Request closure failed to receive an answer.");
+        // Create a copy of the senders per thread
+        let ws_client = client_arc.clone();
+        let q_sender_arc = queue_sender.clone();
 
-        // Respond to client upon receiving coordinator response
-        client.send(response).unwrap();
+        thread::spawn(move || {
+
+            // Create request struct from contents
+            let (req, rx) = Request::from_message(&msg, 12);
+
+            // Send Request to request queue, and wait for a response
+            q_sender_arc.send(req).unwrap();
+            rx.recv().expect("Request closure failed to receive an answer.");
+
+            // Respond to client upon receiving coordinator response
+            ws_client.send("GRANT").unwrap();
+        });
+
         Ok(())
    }
 }
@@ -215,11 +257,11 @@ fn main() {
     thread::spawn(move || handle_queue(state_lock, rx));
 
     // Create a moveable copy of tx
-    let transmitter = Arc::new(tx);
+    // let transmitter = Arc::new(tx);
 
     // Create WS server    
     ws::listen(
         address, 
-        |out| handle_request(out, transmitter.clone())
+        |out| handle_request(out, tx.clone())
     ).expect("Failed to create WS server. Aborting.");
 }
