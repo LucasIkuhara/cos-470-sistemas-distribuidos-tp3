@@ -16,7 +16,7 @@ struct ClientOptions {
     server_port: String,
 
     #[clap(short, long, default_value = "1")]
-    retries: u32,
+    repeats: u32,
 
     #[clap(short, long, default_value = "1")]
     access_duration: u64,
@@ -29,7 +29,7 @@ fn main() {
     let opts: ClientOptions = ClientOptions::parse();
     let host = format!("localhost:{}", opts.server_port);
 
-    for _ in 0..opts.retries {
+    for _ in 0..opts.repeats {
         match TcpStream::connect(host.as_str()) {
             Ok(mut stream) => {
                 let pid = std::process::id();
