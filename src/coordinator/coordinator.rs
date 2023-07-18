@@ -17,21 +17,6 @@ pub struct Coordinator {
     current_process: Arc<Mutex<()>>,
 }
 
-// Para acessar o coordenador na thread do terminal e na thread do consumidor,
-// definimos que podemos clonar o coordenador, para isso, apenas precisamos
-// criar uma nova referência de cada item do coordenador.
-impl Clone for Coordinator {
-    fn clone(&self) -> Self {
-        Self {
-            request_channel: Arc::clone(&self.request_channel),
-            release_channel: Arc::clone(&self.release_channel),
-            log_file: Arc::clone(&self.log_file),
-            metrics: Arc::clone(&self.metrics),
-            current_process: Arc::clone(&self.current_process),
-        }
-    }
-}
-
 impl Coordinator {
     pub fn new(
         log_filename: &str,
