@@ -1,0 +1,21 @@
+[package]
+name = "distributed-systems-t3"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = {version = "4.3", features = ["derive"]}
+chrono = "0.4"
+rustyline = "12.0.0"
+
+[lib]
+name = "request"
+path = "src/request.rs"
+
+[[bin]]
+name = "coordinator"
+path = "src/coordinator/entrypoint.rs"
+
+[[bin]]
+name = "client"
+path = "src/client/client.rs"
